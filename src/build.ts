@@ -24,9 +24,11 @@ await new Command()
 	.option('--coreml', 'Enable CoreML EP')
 	.option('--xnnpack', 'Enable XNNPACK EP')
 	.option('--rocm', 'Enable ROCm EP')
+	.option('--openvino', 'Enable OpenVINO EP')
 	.option('-A, --arch <arch:target-arch>', 'Configure target architecture for cross-compile', { default: 'x86_64' })
 	.option('-W, --wasm', 'Compile for WebAssembly (with patches)')
 	.option('--emsdk <version:string>', 'Emsdk version to use for WebAssembly build', { default: '3.1.51' })
+	.option('--reuse-build', 'Reuse existing build directory')
 	.action(async (options, ..._) => {
 		const root = Deno.cwd();
 
@@ -37,8 +39,10 @@ await new Command()
 
 		$.cd(onnxruntimeRoot);
 
-		await $`git reset --hard HEAD`;
-		await $`git clean -fd`;
+		if (!options.reuseBuild) {
+			await $`git reset --hard HEAD`;
+			await $`git clean -fdx`;
+		}
 
 		const patchDir = join(root, 'src', 'patches', 'all');
 		for await (const patchFile of Deno.readDir(patchDir)) {
@@ -174,6 +178,11 @@ await new Command()
 		if (options.xnnpack) {
 			args.push('-Donnxruntime_USE_XNNPACK=ON');
 		}
+
+		if (options.openvino) {
+			args.push('-Donnxruntime_USE_OPENVINO=ON');
+		}
+
 
 		if (!options.wasm) {
 			if (platform === 'darwin') {
