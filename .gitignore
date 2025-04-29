@@ -1,2 +1,4 @@
 /onnxruntime/
 /output/
+/artifact/
+/.venv/
