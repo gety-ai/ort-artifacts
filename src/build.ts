@@ -31,6 +31,7 @@ await new Command()
 	.option('-A, --arch <arch:target-arch>', 'Configure target architecture for cross-compile', { default: 'x86_64' })
 	.option('-W, --wasm', 'Compile for WebAssembly (with patches)')
 	.option('--emsdk <version:string>', 'Emsdk version to use for WebAssembly build', { default: '4.0.3' })
+	.option('--reuse-build', 'Reuse build directory')
 	.action(async (options, ..._) => {
 		const root = Deno.cwd();
 
@@ -39,10 +40,14 @@ await new Command()
 			await $`git clone https://github.com/microsoft/onnxruntime --recursive --single-branch --depth 1 --branch rel-${options.upstreamVersion}`;
 		}
 
+		
+
 		$.cd(onnxruntimeRoot);
 
-		await $`git reset --hard HEAD`;
-		await $`git clean -fd`;
+		if (!options.reuseBuild) {
+			await $`git reset --hard HEAD`;
+			await $`git clean -fdx`;
+		}
 
 		const patchDir = join(root, 'src', 'patches', 'all');
 		for await (const patchFile of Deno.readDir(patchDir)) {
