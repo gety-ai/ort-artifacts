@@ -180,7 +180,11 @@ await new Command()
 		}
 
 		if (options.openvino) {
+			args.push('-Donnxruntime_DISABLE_RTTI=OFF');
 			args.push('-Donnxruntime_USE_OPENVINO=ON');
+			args.push('-Donnxruntime_USE_OPENVINO_CPU=ON');
+			args.push('-Donnxruntime_USE_OPENVINO_GPU=ON');
+			args.push('-Donnxruntime_USE_OPENVINO_NPU=ON');
 		}
 
 
@@ -246,6 +250,7 @@ await new Command()
 		}
 
 		args.push('-Donnxruntime_BUILD_UNIT_TESTS=OFF');
+		args.push('-Donnxruntime_USE_KLEIDIAI=ON');
 
 		if (compilerFlags.length > 0) {
 			const allFlags = compilerFlags.map(def => `-D${def}`).join(' ');
