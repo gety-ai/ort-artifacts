@@ -5,6 +5,7 @@ import { arch as getArch, cpus, platform as getPlatform } from 'node:os';
 
 import { Command, EnumType } from '@cliffy/command';
 import $ from '@david/dax';
+import { env } from "node:process";
 
 const arch: 'x64' | 'arm64' = getArch();
 const platform: 'win32' | 'darwin' | 'linux' = getPlatform();
@@ -29,6 +30,7 @@ await new Command()
 	.option('-W, --wasm', 'Compile for WebAssembly (with patches)')
 	.option('--emsdk <version:string>', 'Emsdk version to use for WebAssembly build', { default: '3.1.51' })
 	.option('--reuse-build', 'Reuse existing build directory')
+	.option('--use-nvidia-env', 'Use CUDA home directory from environment variable')
 	.action(async (options, ..._) => {
 		const root = Deno.cwd();
 
@@ -125,12 +127,18 @@ await new Command()
 
 			switch (platform) {
 				case 'linux': {
-					const cudnnArchiveStream = await fetch(Deno.env.get('CUDNN_URL')!).then(c => c.body!);
-					const cudnnOutPath = join(root, 'cudnn');
-					await Deno.mkdir(cudnnOutPath);
-					await $`tar xvJC ${cudnnOutPath} --strip-components=1 -f -`.stdin(cudnnArchiveStream);
-					args.push(`-Donnxruntime_CUDNN_HOME=${cudnnOutPath}`);
-					
+					if (Deno.env.get('CUDA_HOME') && Deno.env.get('CUDNN_ROOT')) {
+						console.log('Using CUDA home:', Deno.env.get('CUDA_HOME'));
+						console.log('Using CUDNN home:', Deno.env.get('CUDNN_ROOT'));
+						// args.push(`-Donnxruntime_CUDA_HOME=${Deno.env.get('CUDA_HOME')}`);
+						args.push(`-Donnxruntime_CUDNN_HOME=${Deno.env.get('CUDNN_ROOT')}`);
+					} else {
+						const cudnnArchiveStream = await fetch(Deno.env.get('CUDNN_URL')!).then(c => c.body!);
+						const cudnnOutPath = join(root, 'cudnn');
+						await Deno.mkdir(cudnnOutPath);
+						await $`tar xvJC ${cudnnOutPath} --strip-components=1 -f -`.stdin(cudnnArchiveStream);
+						args.push(`-Donnxruntime_CUDNN_HOME=${cudnnOutPath}`);
+					}
 					if (options.trt) {
 						const trtArchiveStream = await fetch(Deno.env.get('TENSORRT_URL')!).then(c => c.body!);
 						const trtOutPath = join(root, 'tensorrt');
@@ -146,12 +154,19 @@ await new Command()
 					args.push('-DCMAKE_CUDA_FLAGS_INIT=-allow-unsupported-compiler');
 
 					// windows should ship with bsdtar which supports extracting .zips
-					const cudnnArchiveStream = await fetch(Deno.env.get('CUDNN_URL')!).then(c => c.body!);
-					const cudnnOutPath = join(root, 'cudnn');
-					await Deno.mkdir(cudnnOutPath);
-					await $`tar xvC ${cudnnOutPath} --strip-components=1 -f -`.stdin(cudnnArchiveStream);
-					args.push(`-Donnxruntime_CUDNN_HOME=${cudnnOutPath}`);
-					
+					if (Deno.env.get('CUDA_HOME') && Deno.env.get('CUDNN_ROOT')) {
+						// console.log('Using CUDA home:', Deno.env.get('CUDA_HOME'));
+						console.log('Using CUDNN home:', Deno.env.get('CUDNN_ROOT'));
+						args.push(`-Donnxruntime_CUDA_HOME=${Deno.env.get('CUDA_HOME')}`);
+						args.push(`-Donnxruntime_CUDNN_HOME=${Deno.env.get('CUDNN_ROOT')}`);
+					} else {
+						const cudnnArchiveStream = await fetch(Deno.env.get('CUDNN_URL')!).then(c => c.body!);
+						const cudnnOutPath = join(root, 'cudnn');
+						await Deno.mkdir(cudnnOutPath);
+						await $`tar xvC ${cudnnOutPath} --strip-components=1 -f -`.stdin(cudnnArchiveStream);
+						args.push(`-Donnxruntime_CUDNN_HOME=${cudnnOutPath}`);
+					}
+						
 					if (options.trt) {
 						const trtArchiveStream = await fetch(Deno.env.get('TENSORRT_URL')!).then(c => c.body!);
 						const trtOutPath = join(root, 'tensorrt');
@@ -185,6 +200,7 @@ await new Command()
 			args.push('-Donnxruntime_USE_OPENVINO_CPU=ON');
 			args.push('-Donnxruntime_USE_OPENVINO_GPU=ON');
 			args.push('-Donnxruntime_USE_OPENVINO_NPU=ON');
+			args.push('-Donnxruntime_USE_OPENVINO_INTERFACE=ON');
 		}
 
 
@@ -266,7 +282,11 @@ await new Command()
 		await $`cmake --install build --config Release`;
 
 		const artifactOutDir = join(root, 'artifact');
-		await Deno.mkdir(artifactOutDir);
+		if ((await Deno.stat(artifactOutDir)).isDirectory) {
+			await Deno.remove(artifactOutDir, { recursive: true });
+		} else {
+			await Deno.mkdir(artifactOutDir);
+		}
 
 		const artifactLibDir = join(artifactOutDir, 'onnxruntime', 'lib');
 		await Deno.mkdir(artifactLibDir, { recursive: true });
