@@ -40,7 +40,20 @@ await new Command()
 		const root = Deno.cwd();
 
 		const onnxruntimeRoot = join(root, 'onnxruntime');
-		if (!await exists(onnxruntimeRoot)) {
+		const isExists = await exists(onnxruntimeRoot)
+		let isBranchCorrect = false;
+		if (isExists) {
+			$.cd(onnxruntimeRoot);
+			const currentBranch = (await $`git branch --show-current`.stdout("piped")).stdout.trim()
+			isBranchCorrect = currentBranch === `rel-${options.upstreamVersion}`;
+			
+			if (!isBranchCorrect) {
+				console.log(`Removing onnxruntime directory because branch is incorrect: ${onnxruntimeRoot}, current branch: ${currentBranch}, expected branch: rel-${options.upstreamVersion}`);
+				await Deno.remove(onnxruntimeRoot, { recursive: true });
+			}
+			$.cd(root);
+		}
+		if (!isExists || !isBranchCorrect) {
 			await $`git clone https://github.com/microsoft/onnxruntime --recursive --single-branch --depth 1 --branch rel-${options.upstreamVersion}`;
 		}
 
