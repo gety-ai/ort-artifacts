@@ -38,6 +38,7 @@ await new Command()
 	.option('--use-vs-2022', 'Use VS 2022 toolset')
 	.action(async (options, ..._) => {
 		const root = Deno.cwd();
+		console.log(`current working directory: ${root}`);
 
 		const onnxruntimeRoot = join(root, 'onnxruntime');
 		const isExists = await exists(onnxruntimeRoot)
@@ -51,6 +52,7 @@ await new Command()
 				console.log(`Removing onnxruntime directory because branch is incorrect: ${onnxruntimeRoot}, current branch: ${currentBranch}, expected branch: rel-${options.upstreamVersion}`);
 				await Deno.remove(onnxruntimeRoot, { recursive: true });
 			}
+
 			$.cd(root);
 		}
 		if (!isExists || !isBranchCorrect) {
@@ -68,22 +70,23 @@ await new Command()
 		if (!options.reuseBuild) {
 			await $`git reset --hard HEAD`;
 			await $`git clean -fdx`;
-		}
 
-		const patchDir = join(root, 'src', 'patches', 'all');
-		for await (const patchFile of Deno.readDir(patchDir)) {
-			if (!patchFile.isFile) {
-				continue;
+			const patchDir = join(root, 'src', 'patches', 'all');
+			for await (const patchFile of Deno.readDir(patchDir)) {
+				if (!patchFile.isFile) {
+					continue;
+				}
+
+				// A workaround for dynlib cannot be build
+				if (!options.static && patchFile.name.includes('0001-no-soname.patch')) {
+					continue;
+				}
+
+				await $`git apply ${join(patchDir, patchFile.name)} --ignore-whitespace --recount --verbose`;
+				console.log(`applied ${patchFile.name}`);
 			}
-
-			// A workaround for dynlib cannot be build
-			if (!options.static && patchFile.name.includes('0001-no-soname.patch')) {
-				continue;
-			}
-
-			await $`git apply ${join(patchDir, patchFile.name)} --ignore-whitespace --recount --verbose`;
-			console.log(`applied ${patchFile.name}`);
 		}
+		
 
 		if (options.wasm) {
 			const args = [];
