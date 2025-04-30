@@ -32,8 +32,14 @@ jobs:
             feature-set: train
             runs-on: ubuntu-22.04
           - target: x86_64-unknown-linux-gnu
-            args: "-t --cuda --trt --xnnpack -N"
+            args: "-t --cuda --trt --xnnpack -N --openvino"
             static: true
+            feature-set: train,cu12
+            cuda-version: '12.8.1'
+            runs-on: ubuntu-22.04
+          - target: x86_64-unknown-linux-gnu
+            args: "-t --cuda --trt --xnnpack -N --openvino"
+            static: false
             feature-set: train,cu12
             cuda-version: '12.8.1'
             runs-on: ubuntu-22.04
@@ -54,8 +60,14 @@ jobs:
             feature-set: train
             runs-on: macos-13
           - target: x86_64-pc-windows-msvc
-            args: "-t --directml --cuda --trt --xnnpack"
+            args: "-t --directml --cuda --trt --xnnpack --openvino"
             static: true
+            feature-set: train,cu12
+            cuda-version: '12.8.1'
+            runs-on: windows-2022
+          - target: x86_64-pc-windows-msvc
+            args: "-t --directml --cuda --trt --xnnpack --openvino"
+            static: false
             feature-set: train,cu12
             cuda-version: '12.8.1'
             runs-on: windows-2022

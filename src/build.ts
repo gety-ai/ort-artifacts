@@ -11,6 +11,8 @@ const platform: 'win32' | 'darwin' | 'linux' = getPlatform();
 
 const TARGET_ARCHITECTURE_TYPE = new EnumType([ 'x86_64', 'aarch64' ]);
 
+$.setPrintCommand(true);
+
 await new Command()
 	.name('ort-artifact')
 	.version('0.1.0')
@@ -33,6 +35,7 @@ await new Command()
 	.option('--emsdk <version:string>', 'Emsdk version to use for WebAssembly build', { default: '4.0.3' })
 	.option('--reuse-build', 'Reuse build directory')
 	.option('--use-cuda-env', 'Use CUDA_HOME or CUDNN_ROOT environment variables for CUDA/CUDNN paths')
+	.option('--use-vs-2022', 'Use VS 2022 toolset')
 	.action(async (options, ..._) => {
 		const root = Deno.cwd();
 
@@ -57,6 +60,11 @@ await new Command()
 		const patchDir = join(root, 'src', 'patches', 'all');
 		for await (const patchFile of Deno.readDir(patchDir)) {
 			if (!patchFile.isFile) {
+				continue;
+			}
+
+			// A workaround for dynlib cannot be build
+			if (!options.static && patchFile.name.includes('0001-no-soname.patch')) {
 				continue;
 			}
 
@@ -253,6 +261,10 @@ await new Command()
 
 		if (options.ninja && !(platform === 'win32' && options.arch === 'aarch64')) {
 			args.push('-G', 'Ninja');
+		}
+
+		if (options.useVs2022 && platform === 'win32') {
+			args.push('-DCMAKE_GENERATOR="Visual Studio 17 2022"');
 		}
 
 		const sourceDir = options.static ? join(root, 'src', 'static-build') : 'cmake';
