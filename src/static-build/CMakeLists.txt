@@ -183,6 +183,12 @@ if(onnxruntime_USE_DML)
     install(FILES "$<TARGET_FILE_DIR:onnxruntime_providers_dml>/DirectML.dll" TYPE LIB)
 endif()
 
+if(onnxruntime_USE_OPENVINO)
+    add_dependencies(onnxruntime onnxruntime_providers_openvino)
+    install(IMPORTED_RUNTIME_ARTIFACTS onnxruntime_providers_shared DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(IMPORTED_RUNTIME_ARTIFACTS onnxruntime_providers_openvino DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()
+
 install(
     FILES ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}${PROJECT_NAME}${CMAKE_STATIC_LIBRARY_SUFFIX}
     RENAME ${CMAKE_STATIC_LIBRARY_PREFIX}onnxruntime${CMAKE_STATIC_LIBRARY_SUFFIX}

@@ -32,6 +32,7 @@ await new Command()
 	.option('-W, --wasm', 'Compile for WebAssembly (with patches)')
 	.option('--emsdk <version:string>', 'Emsdk version to use for WebAssembly build', { default: '4.0.3' })
 	.option('--reuse-build', 'Reuse build directory')
+	.option('--use-cuda-env', 'Use CUDA_HOME or CUDNN_ROOT environment variables for CUDA/CUDNN paths')
 	.action(async (options, ..._) => {
 		const root = Deno.cwd();
 
@@ -40,6 +41,10 @@ await new Command()
 			await $`git clone https://github.com/microsoft/onnxruntime --recursive --single-branch --depth 1 --branch rel-${options.upstreamVersion}`;
 		}
 
+		if (options.useCudaEnv) {
+			console.log('CUDNN_ROOT:', Deno.env.get('CUDNN_ROOT'));
+			console.log('CUDA_HOME:', Deno.env.get('CUDA_HOME'));
+		}
 		
 
 		$.cd(onnxruntimeRoot);
@@ -94,11 +99,16 @@ await new Command()
 			const cudaFlags: string[] = [];
 			switch (platform) {
 				case 'linux': {
-					const cudnnArchiveStream = await fetch(Deno.env.get('CUDNN_URL')!).then(c => c.body!);
-					const cudnnOutPath = join(root, 'cudnn');
-					await Deno.mkdir(cudnnOutPath);
-					await $`tar xvJC ${cudnnOutPath} --strip-components=1 -f -`.stdin(cudnnArchiveStream);
-					args.push(`-Donnxruntime_CUDNN_HOME=${cudnnOutPath}`);
+					if (options.useCudaEnv) {
+						args.push(`-Donnxruntime_CUDA_HOME=${Deno.env.get('CUDA_HOME')}`);
+						args.push(`-Donnxruntime_CUDNN_HOME=${Deno.env.get('CUDNN_ROOT')}`);
+					} else {
+						const cudnnArchiveStream = await fetch(Deno.env.get('CUDNN_URL')!).then(c => c.body!);
+						const cudnnOutPath = join(root, 'cudnn');
+						await Deno.mkdir(cudnnOutPath);
+						await $`tar xvJC ${cudnnOutPath} --strip-components=1 -f -`.stdin(cudnnArchiveStream);
+						args.push(`-Donnxruntime_CUDNN_HOME=${cudnnOutPath}`);
+					}
 					
 					if (options.trt) {
 						const trtArchiveStream = await fetch(Deno.env.get('TENSORRT_URL')!).then(c => c.body!);
@@ -114,12 +124,17 @@ await new Command()
 					// nvcc < 12.4 throws an error with VS 17.10
 					cudaFlags.push('-allow-unsupported-compiler');
 
-					// windows should ship with bsdtar which supports extracting .zips
-					const cudnnArchiveStream = await fetch(Deno.env.get('CUDNN_URL')!).then(c => c.body!);
-					const cudnnOutPath = join(root, 'cudnn');
-					await Deno.mkdir(cudnnOutPath);
-					await $`tar xvC ${cudnnOutPath} --strip-components=1 -f -`.stdin(cudnnArchiveStream);
-					args.push(`-Donnxruntime_CUDNN_HOME=${cudnnOutPath}`);
+					if (options.useCudaEnv) {
+						args.push(`-Donnxruntime_CUDA_HOME=${Deno.env.get('CUDA_HOME')}`);
+						args.push(`-Donnxruntime_CUDNN_HOME=${Deno.env.get('CUDNN_ROOT')}`);
+					} else {
+						// windows should ship with bsdtar which supports extracting .zips
+						const cudnnArchiveStream = await fetch(Deno.env.get('CUDNN_URL')!).then(c => c.body!);
+						const cudnnOutPath = join(root, 'cudnn');
+						await Deno.mkdir(cudnnOutPath);
+						await $`tar xvC ${cudnnOutPath} --strip-components=1 -f -`.stdin(cudnnArchiveStream);
+						args.push(`-Donnxruntime_CUDNN_HOME=${cudnnOutPath}`);
+					}
 					
 					if (options.trt) {
 						const trtArchiveStream = await fetch(Deno.env.get('TENSORRT_URL')!).then(c => c.body!);
@@ -170,7 +185,7 @@ await new Command()
 			args.push('-Donnxruntime_USE_OPENVINO_CPU=ON');
 			args.push('-Donnxruntime_USE_OPENVINO_GPU=ON');
 			args.push('-Donnxruntime_USE_OPENVINO_NPU=ON');
-			// args.push('-Donnxruntime_USE_OPENVINO_INTERFACE=ON');
+			args.push('-Donnxruntime_USE_OPENVINO_INTERFACE=ON');
 		}
 
 		if (!options.wasm) {
