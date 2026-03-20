@@ -57,6 +57,10 @@ const CUDA_ARCHIVES: Record<number, Record<'win32' | 'linux', Record<'cudnn' | '
 		}
 	}
 };
+const OPENVINO_ARCHIVES: Record<'win32' | 'linux', string> = {
+	linux: 'https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.0/linux/openvino_toolkit_ubuntu24_2026.0.0.20965.c6d6a13a886_x86_64.tgz',
+	win32: 'https://storage.openvinotoolkit.org/repositories/openvino/packages/2026.0/windows/openvino_toolkit_windows_2026.0.0.20965.c6d6a13a886_x86_64.zip'
+};
 const NVRTX_ARCHIVES: Record<number, Record<'win32' | 'linux', string>> = {
 	12: {
 		linux: 'https://developer.nvidia.com/downloads/trt/rtx_sdk/secure/1.3/TensorRT-RTX-1.3.0.35-Linux-x86_64-cuda-12.9-Release-external.tar.gz',
@@ -288,6 +292,20 @@ await new Command()
 			args.push('-Donnxruntime_USE_XNNPACK=ON');
 		}
 		if (options.openvino) {
+			const ovinoOutPath = join(root, 'openvino');
+			const ovinoArchiveUrl = OPENVINO_ARCHIVES[platform as 'win32' | 'linux'];
+			const ovinoArchiveStream = await fetch(ovinoArchiveUrl).then(c => c.body!);
+			await Deno.mkdir(ovinoOutPath);
+			if (platform === 'win32') {
+				const tmpZip = join(root, 'openvino.zip');
+				await Deno.writeFile(tmpZip, ovinoArchiveStream);
+				await $`tar xvf ${tmpZip} -C ${ovinoOutPath} --strip-components=1`;
+				await Deno.remove(tmpZip);
+			} else {
+				await $`tar xvzC ${ovinoOutPath} --strip-components=1 -f -`.stdin(ovinoArchiveStream);
+			}
+
+			args.push(`-DCMAKE_PREFIX_PATH=${join(ovinoOutPath, 'runtime', 'cmake')}`);
 			args.push('-Donnxruntime_DISABLE_RTTI=OFF');
 			args.push('-Donnxruntime_USE_OPENVINO=ON');
 			args.push('-Donnxruntime_USE_OPENVINO_CPU=ON');
