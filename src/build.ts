@@ -68,20 +68,29 @@ const NVRTX_ARCHIVES: Record<number, Record<'win32' | 'linux', string>> = {
 	}
 };
 
-async function *makeTarInput(folder: string): AsyncGenerator<TarStreamInput> {
-	for await (const entry of Deno.readDir(folder)) {
-		if (!entry.isFile) {
+async function *makeTarInput(...folders: string[]): AsyncGenerator<TarStreamInput> {
+	for (const folder of folders) {
+		let entries: Deno.DirEntry[];
+		try {
+			entries = await Array.fromAsync(Deno.readDir(folder));
+		} catch {
 			continue;
 		}
 
-		const path = join(folder, entry.name);
-		const { size } = await Deno.stat(path);
-		yield {
-			type: 'file',
-			path: entry.name,
-			size,
-			readable: (await Deno.open(path, { read: true })).readable
-		};
+		for (const entry of entries) {
+			if (!entry.isFile) {
+				continue;
+			}
+
+			const path = join(folder, entry.name);
+			const { size } = await Deno.stat(path);
+			yield {
+				type: 'file',
+				path: entry.name,
+				size,
+				readable: (await Deno.open(path, { read: true })).readable
+			};
+		}
 	}
 }
 
@@ -382,7 +391,7 @@ await new Command()
 		await $`cmake --install build`;
 
 		const artifactOut = await Deno.open(join(root, 'artifact.tar.lzma2'), { create: true, write: true });
-		await ReadableStream.from(makeTarInput(join(artifactOutDir, 'lib')))
+		await ReadableStream.from(makeTarInput(join(artifactOutDir, 'lib'), join(artifactOutDir, 'bin')))
 			.pipeThrough(new TarStream())
 			.pipeThrough(new CompressorStream())
 			.pipeTo(artifactOut.writable);
