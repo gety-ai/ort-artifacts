@@ -35,7 +35,19 @@ class CompressorStream extends TransformStream<Uint8Array<ArrayBuffer>, Uint8Arr
 	}
 }
 
-const CUDA_ARCHIVES: Record<number, Record<'win32' | 'linux' | 'linux-aarch64', Record<'cudnn' | 'trt', string>>> = {
+type CudaArchives = Record<'cudnn' | 'trt', string>;
+// CUDA 12 is only packaged for x86_64, so its `linux-aarch64` entry is absent.
+const CUDA_ARCHIVES: Record<number, Record<'win32' | 'linux', CudaArchives> & Partial<Record<'linux-aarch64', CudaArchives>>> = {
+	12: {
+		linux: {
+			cudnn: 'https://developer.download.nvidia.com/compute/cudnn/redist/cudnn_jit/linux-x86_64/cudnn_jit-linux-x86_64-9.23.2.1_cuda12-archive.tar.xz',
+			trt: 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.15.1/tars/TensorRT-10.15.1.29.Linux.x86_64-gnu.cuda-12.9.tar.gz'
+		},
+		win32: {
+			cudnn: 'https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.23.2.1_cuda12-archive.zip',
+			trt: 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.15.1/zip/TensorRT-10.15.1.29.Windows.amd64.cuda-12.9.zip'
+		}
+	},
 	13: {
 		linux: {
 			cudnn: 'https://developer.download.nvidia.com/compute/cudnn/redist/cudnn_jit/linux-x86_64/cudnn_jit-linux-x86_64-9.23.2.1_cuda13-archive.tar.xz',
@@ -103,8 +115,8 @@ await new Command()
 	.option('--android', 'Target Android')
 	.option('--cuda <version:integer>', 'Enable CUDA EP', {
 		value(value: number) {
-			if (value !== 13) {
-				throw new ValidationError('--cuda must be 13');
+			if (value !== 12 && value !== 13) {
+				throw new ValidationError('--cuda must be either 12 or 13');
 			}
 			return value;
 		}
@@ -171,12 +183,23 @@ await new Command()
 		}
 
 		const cudaArchives = options.cuda ? CUDA_ARCHIVES[options.cuda][isLinuxAarch64 ? 'linux-aarch64' : platform as 'win32' | 'linux'] : null;
+		if (options.cuda && !cudaArchives) {
+			throw new ValidationError(`--cuda=${options.cuda} is not available for this target`);
+		}
 
 		if (platform === 'linux' && !options.android) {
-			env.CC = 'clang-21';
-			env.CXX = 'clang++-21';
-			if (options.cuda) {
-				cudaFlags.push('-ccbin', 'clang++-21');
+			if (options.cuda === 12) {
+				// nvcc only accepts clang up to 19 on CUDA 12.x. setup-clang symlinks cc/c++ to
+				// clang-21, so gcc has to be named explicitly to keep cmake off of those.
+				env.CC = 'gcc';
+				env.CXX = 'g++';
+				cudaFlags.push('-ccbin', 'g++');
+			} else {
+				env.CC = 'clang-21';
+				env.CXX = 'clang++-21';
+				if (options.cuda) {
+					cudaFlags.push('-ccbin', 'clang++-21');
+				}
 			}
 		} else if (platform === 'win32') {
 			args.push('-G', options.vs2026 ? 'Visual Studio 18 2026' : 'Visual Studio 17 2022');
