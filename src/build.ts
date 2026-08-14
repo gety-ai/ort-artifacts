@@ -36,6 +36,16 @@ class CompressorStream extends TransformStream<Uint8Array<ArrayBuffer>, Uint8Arr
 }
 
 const CUDA_ARCHIVES: Record<number, Record<'win32' | 'linux', Record<'cudnn' | 'trt', string>>> = {
+	12: {
+		linux: {
+			cudnn: 'https://developer.download.nvidia.com/compute/cudnn/redist/cudnn_jit/linux-x86_64/cudnn_jit-linux-x86_64-9.23.2.1_cuda12-archive.tar.xz',
+			trt: 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.15.1/tars/TensorRT-10.15.1.29.Linux.x86_64-gnu.cuda-12.9.tar.gz'
+		},
+		win32: {
+			cudnn: 'https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.23.2.1_cuda12-archive.zip',
+			trt: 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/10.15.1/zip/TensorRT-10.15.1.29.Windows.amd64.cuda-12.9.zip'
+		}
+	},
 	13: {
 		linux: {
 			cudnn: 'https://developer.download.nvidia.com/compute/cudnn/redist/cudnn_jit/linux-x86_64/cudnn_jit-linux-x86_64-9.23.2.1_cuda13-archive.tar.xz',
@@ -94,8 +104,8 @@ await new Command()
 	.option('--android', 'Target Android')
 	.option('--cuda <version:integer>', 'Enable CUDA EP', {
 		value(value: number) {
-			if (value !== 13) {
-				throw new ValidationError('--cuda must be 13');
+			if (value !== 12 && value !== 13) {
+				throw new ValidationError('--cuda must be either 12 or 13');
 			}
 			return value;
 		}
@@ -157,10 +167,18 @@ await new Command()
 		const cudaArchives = options.cuda ? CUDA_ARCHIVES[options.cuda][platform as 'win32' | 'linux'] : null;
 
 		if (platform === 'linux' && !options.android) {
-			env.CC = 'clang-21';
-			env.CXX = 'clang++-21';
-			if (options.cuda) {
-				cudaFlags.push('-ccbin', 'clang++-21');
+			if (options.cuda === 12) {
+				// nvcc only accepts clang up to 19 on CUDA 12.x. setup-clang symlinks cc/c++ to
+				// clang-21, so gcc has to be named explicitly to keep cmake off of those.
+				env.CC = 'gcc';
+				env.CXX = 'g++';
+				cudaFlags.push('-ccbin', 'g++');
+			} else {
+				env.CC = 'clang-21';
+				env.CXX = 'clang++-21';
+				if (options.cuda) {
+					cudaFlags.push('-ccbin', 'clang++-21');
+				}
 			}
 		} else if (platform === 'win32') {
 			args.push('-G', options.vs2026 ? 'Visual Studio 18 2026' : 'Visual Studio 17 2022');
