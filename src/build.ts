@@ -66,6 +66,36 @@ const NVRTX_ARCHIVES: Record<'win32' | 'linux', string> = {
 	win32: 'https://developer.nvidia.com/downloads/trt/rtx_sdk/secure/1.4/TensorRT-RTX-1.4.0.76-Windows-amd64-cuda-13.2-Release-external.zip'
 };
 
+// CUDA 12.x ships CCCL 2.8, whose clusterlaunchcontrol PTX wrappers hand `long2` members to an
+// "l" (64-bit) asm constraint. `long` is 32 bits under MSVC, so every TU that reaches libcu++ —
+// ~120 of them in the CUDA EP — fails with "asm operand type size(4) does not match ... 'l'" as
+// soon as an sm_100+ architecture is in the mix, because the offending branch is gated on
+// `__CUDA_ARCH__ >= 1000`. CCCL 3.0 (bundled with CUDA 13) fixed this by switching to
+// `longlong2`; apply the same rename in place. Unaffected on Linux, where `long` is 64 bits.
+async function patchToolkitClusterLaunchControl(): Promise<void> {
+	const cudaPath = Deno.env.get('CUDA_PATH');
+	if (!cudaPath) {
+		console.warn('CUDA_PATH is unset, skipping CCCL clusterlaunchcontrol fixup');
+		return;
+	}
+
+	const header = join(cudaPath, 'include', 'cuda', '__ptx', 'instructions', 'generated', 'clusterlaunchcontrol.h');
+	let source: string;
+	try {
+		source = await Deno.readTextFile(header);
+	} catch {
+		console.warn(`${header} not found, skipping CCCL clusterlaunchcontrol fixup`);
+		return;
+	}
+
+	if (!source.includes('reinterpret_cast<long2*>')) {
+		return;
+	}
+
+	await Deno.writeTextFile(header, source.replaceAll('reinterpret_cast<long2*>', 'reinterpret_cast<longlong2*>'));
+	console.log(`patched ${header}`);
+}
+
 async function *makeTarInput(...folders: string[]): AsyncGenerator<TarStreamInput> {
 	for (const folder of folders) {
 		let entries: Deno.DirEntry[];
@@ -236,6 +266,8 @@ await new Command()
 				cudaFlags.push('-allow-unsupported-compiler');
 				if (options.cuda === 13) {
 					compilerFlags.push('-DCUDA_VECTOR_TYPE_ALIGNMENT_16_32_ENABLED=1');
+				} else {
+					await patchToolkitClusterLaunchControl();
 				}
 			}
 		}
