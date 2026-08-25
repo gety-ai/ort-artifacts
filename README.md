@@ -132,9 +132,11 @@ If a non-default baseline is ever shipped, the level **must** appear as the lead
 ```yaml
 - target: x86_64-pc-windows-msvc
   args: "--directml --cpu-baseline v3"
-  feature-set: amd64-v3,directml
-  # -> x86_64-pc-windows-msvc+amd64-v3,directml.tar.lzma2
+  feature-set: amd64-v3+directml
+  # -> x86_64-pc-windows-msvc+amd64-v3+directml.tar.lzma2
 ```
+
+Segments are separated with `+`, never `,`. GitHub keeps commas in Actions artifact names but rewrites them in *release asset* names, so a comma here silently changes the filename once [ort-redistribution](https://github.com/gety-ai/ort-redistribution) republishes it — and the manifest it writes would then point at a name that does not exist.
 
 The token in the filename is **arch-qualified** — `amd64-v3`, not the bare `v3` accepted by the flag. The flag can be bare because `--arch` supplies the context; a filename has no such context, and a bare level would collide across architectures once aarch64 grows its own vocabulary (`neon`, `sve2`). The mapping is `x86_64` → `amd64`, `aarch64` → `arm64`:
 
@@ -148,3 +150,5 @@ The token in the filename is **arch-qualified** — `amd64-v3`, not the bare `v3
 | `aarch64` / `v8.0` | *(omitted — the default)* |
 
 [ort-redistribution](https://github.com/gety-ai/ort-redistribution) parses this token back out into an explicit `cpuBaseline` field when it splits an archive into base + EP packages, so keep the two vocabularies in sync.
+
+Note the two layers name things differently on purpose. Here the default baseline is omitted, which keeps the build matrix terse. In the redistribution release it is always written out — `x86_64-pc-windows-msvc+amd64-v1+cu12.base.zip` — because those names are pinned by consumers, and a name that states its baseline lets a consumer switch variants by changing that one segment.
