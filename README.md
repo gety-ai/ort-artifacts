@@ -127,11 +127,24 @@ Each matrix row uploads `artifact.tar.lzma2` under the name `<target>[+<feature-
 
 Every row builds at the default baseline and therefore carries no baseline segment in its filename, so downstream pinned URLs keep resolving. The archive contents change with every rebuild, so consumers still bump the sha256 they pin.
 
-If a non-default baseline is ever shipped, the level **must** appear in `feature-set` so an artifact that cannot run everywhere is impossible to mistake for one that can:
+If a non-default baseline is ever shipped, the level **must** appear as the leading segment of `feature-set` so an artifact that cannot run everywhere is impossible to mistake for one that can:
 
 ```yaml
 - target: x86_64-pc-windows-msvc
   args: "--directml --cpu-baseline v3"
-  feature-set: v3,directml
-  # -> x86_64-pc-windows-msvc+v3,directml.tar.lzma2
+  feature-set: amd64-v3,directml
+  # -> x86_64-pc-windows-msvc+amd64-v3,directml.tar.lzma2
 ```
+
+The token in the filename is **arch-qualified** — `amd64-v3`, not the bare `v3` accepted by the flag. The flag can be bare because `--arch` supplies the context; a filename has no such context, and a bare level would collide across architectures once aarch64 grows its own vocabulary (`neon`, `sve2`). The mapping is `x86_64` → `amd64`, `aarch64` → `arm64`:
+
+| `--arch` / `--cpu-baseline` | Token in `feature-set` |
+| :--- | :--- |
+| `x86_64` / `v1` | *(omitted — the default)* |
+| `x86_64` / `v2` | `amd64-v2` |
+| `x86_64` / `avx` | `amd64-avx` |
+| `x86_64` / `v3` | `amd64-v3` |
+| `x86_64` / `v4` | `amd64-v4` |
+| `aarch64` / `v8.0` | *(omitted — the default)* |
+
+[ort-redistribution](https://github.com/gety-ai/ort-redistribution) parses this token back out into an explicit `cpuBaseline` field when it splits an archive into base + EP packages, so keep the two vocabularies in sync.
