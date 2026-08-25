@@ -14,6 +14,210 @@ const platform = getPlatform() as 'win32' | 'darwin' | 'linux';
 
 const TARGET_ARCHITECTURE_TYPE = new EnumType([ 'x86_64', 'aarch64' ]);
 
+/**
+ * CPU baseline selection — read this before raising the default.
+ *
+ * MLAS compiles separate SSE2/AVX/AVX2/AVX512 kernels with per-file compiler flags
+ * (cmake/onnxruntime_mlas.cmake) and selects the fastest compatible one at runtime via CPUID
+ * (core/mlas/lib/platform.cpp). Raising the global baseline does not make those kernels faster.
+ * It only vectorizes the code that is not dispatched — Eigen operators, protobuf, STL, session
+ * assembly — and it compiles FMA into MLAS's own generic fallback kernels. On a CPU with AVX but
+ * no FMA3/AVX2 (Zhaoxin KX-5000/6000, Sandy/Ivy Bridge) that is an EXCEPTION_ILLEGAL_INSTRUCTION
+ * on the first inference.
+ *
+ * See Linear DEV-666 / DEV-668. The x86_64 default must stay v1.
+ */
+type CpuBaseline = 'v1' | 'v2' | 'avx' | 'v3' | 'v4' | 'v8.0';
+
+const CPU_BASELINES = {
+	x86_64: [ 'v1', 'v2', 'avx', 'v3', 'v4' ],
+	aarch64: [ 'v8.0' ]
+} as const;
+
+type TargetArchitecture = keyof typeof CPU_BASELINES;
+
+const DEFAULT_CPU_BASELINE: Record<TargetArchitecture, CpuBaseline> = {
+	x86_64: 'v1',
+	aarch64: 'v8.0'
+};
+
+const ALL_CPU_BASELINES = new Set<CpuBaseline>(Object.values(CPU_BASELINES).flat() as CpuBaseline[]);
+
+// Baselines that grant FMA to every translation unit, so the leak guard below cannot apply.
+const FMA_ENABLED_BASELINES = new Set<CpuBaseline>([ 'v3', 'v4' ]);
+
+// MLAS translation units carrying no per-file COMPILE_FLAGS: they get whatever the global
+// baseline grants, which makes them the ones that fault on older CPUs.
+const GENERIC_MLAS_TUS = [ 'logistic', 'tanh', 'erf', 'activate', 'compute' ];
+
+// llvm-objdump, GNU objdump and dumpbin all emit `<address>: [bytes] <mnemonic> <operands>`.
+// Anchoring on the mnemonic column keeps symbol names and disassembly comments from matching.
+const FMA_MNEMONIC = /^\s*[0-9a-f`]+:\s+(?:[0-9a-f]{2}\s+)*v(?:fmadd|fmsub|fnmadd|fnmsub)/im;
+
+// A disassembler can exit 0 having printed only a file header, which would let the FMA check
+// pass without ever inspecting an instruction.
+const ANY_MNEMONIC = /^\s*[0-9a-f`]+:\s+(?:[0-9a-f]{2}\s+)*[a-z][a-z0-9.]{2,}\b/im;
+
+interface Disassembler {
+	command: string;
+	args: string[];
+}
+
+const DISASSEMBLERS: Disassembler[] = [
+	{ command: 'llvm-objdump', args: [ '-d' ] },
+	{ command: 'objdump', args: [ '-d' ] },
+	...(platform === 'win32' ? [ { command: 'dumpbin', args: [ '/disasm:nobytes' ] } ] : [])
+];
+
+function getCpuBaselineCompilerFlags(targetArch: TargetArchitecture, cpuBaseline: CpuBaseline): string[] {
+	if (targetArch !== 'x86_64') {
+		return [];
+	}
+
+	if (platform === 'win32') {
+		// x64 implies SSE2 and MSVC has no switch for the v2 level, so v1 and v2 emit nothing.
+		switch (cpuBaseline) {
+			case 'avx':
+				return [ '/arch:AVX' ];
+			case 'v3':
+				return [ '/arch:AVX2' ];
+			case 'v4':
+				return [ '/arch:AVX512' ];
+			default:
+				return [];
+		}
+	}
+
+	switch (cpuBaseline) {
+		case 'v1':
+			return [ '-march=x86-64' ];
+		case 'v2':
+			return [ '-march=x86-64-v2' ];
+		// No psABI level covers AVX without FMA, and ORT's own USE_AVX emits a bare -mavx that
+		// drops the v2 prerequisites.
+		case 'avx':
+			return [ '-march=x86-64-v2', '-mavx' ];
+		case 'v3':
+			return [ '-march=x86-64-v3' ];
+		case 'v4':
+			return [ '-march=x86-64-v4' ];
+		default:
+			return [];
+	}
+}
+
+// Everything in CMAKE_{C,CXX}_FLAGS that can move the instruction-set floor; -D defines and
+// warning switches are irrelevant to the baseline contract.
+function getIsaFlags(flags: string): string[] {
+	return flags.split(/\s+/).filter(flag =>
+		/^\/arch:/i.test(flag) ||
+		/^-m(?:arch|cpu)=/.test(flag) ||
+		/^-m(?:no-)?(?:avx|fma|f16c|bmi|lzcnt|movbe|popcnt|sse|ssse|xsave)/.test(flag)
+	);
+}
+
+// Spawning is the probe: a usage message with a non-zero exit still proves the tool exists,
+// while a missing binary throws NotFound. Anything else — a denied --allow-run, a broken
+// executable — is reported rather than mistaken for absence.
+async function resolveDisassembler(): Promise<Disassembler | null> {
+	for (const disassembler of DISASSEMBLERS) {
+		try {
+			await new Deno.Command(disassembler.command, { stdout: 'null', stderr: 'null' }).output();
+			return disassembler;
+		} catch (error) {
+			if (error instanceof Deno.errors.NotFound) {
+				continue;
+			}
+
+			throw new ValidationError(
+				`could not execute ${disassembler.command}: ${error instanceof Error ? error.message : String(error)}; ` +
+				'check its permissions and that Deno was granted --allow-run'
+			);
+		}
+	}
+
+	return null;
+}
+
+async function findGenericMlasObjects(buildRoot: string): Promise<Map<string, string[]>> {
+	const extension = platform === 'win32' ? 'obj' : 'o';
+	const found = new Map<string, string[]>(GENERIC_MLAS_TUS.map(tu => [ tu, [] ]));
+
+	// Ninja and the Makefile generators name objects `<source>.cpp.o`; the Visual Studio and Xcode
+	// generators drop the source extension. No other MLAS source shares these basenames.
+	const wanted = new Map<string, string>();
+	for (const tu of GENERIC_MLAS_TUS) {
+		wanted.set(`${tu}.cpp.${extension}`, tu);
+		wanted.set(`${tu}.${extension}`, tu);
+	}
+
+	// CMake mirrors the source's absolute path under the target directory, and `--static` nests
+	// the whole tree one level deeper, so neither layout can be addressed by a fixed path.
+	async function walk(folder: string, inMlasTarget: boolean): Promise<void> {
+		for await (const entry of Deno.readDir(folder)) {
+			const path = join(folder, entry.name);
+			if (entry.isDirectory) {
+				await walk(path, inMlasTarget || entry.name === 'onnxruntime_mlas.dir');
+				continue;
+			}
+
+			const tu = inMlasTarget ? wanted.get(entry.name) : undefined;
+			if (tu) {
+				found.get(tu)!.push(path);
+			}
+		}
+	}
+
+	await walk(buildRoot, false);
+	return found;
+}
+
+async function assertNoFmaInGenericMlas(
+	buildRoot: string,
+	disassembler: Disassembler,
+	cpuBaseline: CpuBaseline
+): Promise<void> {
+	const objects = await findGenericMlasObjects(buildRoot);
+	const decoder = new TextDecoder();
+
+	for (const [ tu, paths ] of objects) {
+		if (paths.length === 0) {
+			// Fail closed: a translation unit quietly dropping out of the guard is exactly how
+			// DEV-666 would come back unnoticed.
+			throw new Error(
+				`no object found for generic MLAS TU ${tu}.cpp under ${buildRoot}, so the CPU baseline ` +
+				'guard cannot vouch for this build; if upstream renamed or moved it, update GENERIC_MLAS_TUS'
+			);
+		}
+
+		for (const path of paths) {
+			const result = await new Deno.Command(disassembler.command, {
+				args: [ ...disassembler.args, path ],
+				stdout: 'piped',
+				stderr: 'piped'
+			}).output();
+			if (!result.success) {
+				throw new Error(`${disassembler.command} failed on ${path}: ${decoder.decode(result.stderr).trim()}`);
+			}
+
+			const disassembly = decoder.decode(result.stdout);
+			if (!ANY_MNEMONIC.test(disassembly)) {
+				throw new Error(`${disassembler.command} decoded no instructions from ${path}`);
+			}
+
+			if (FMA_MNEMONIC.test(disassembly)) {
+				throw new Error(
+					`FMA instructions leaked into the generic MLAS TU ${tu}.cpp at --cpu-baseline=${cpuBaseline} ` +
+					`(${path}). This is the DEV-666 crash signature: the artifact would fault with ` +
+					'EXCEPTION_ILLEGAL_INSTRUCTION on the first inference on any CPU without FMA3. ' +
+					`Something re-introduced /arch:AVX2, -mavx2 or -mfma into the global compile flags; ` +
+					`check CMAKE_CXX_FLAGS in ${join(buildRoot, 'CMakeCache.txt')}.`
+				);
+			}
+		}
+	}
+}
+
 class CompressorStream extends TransformStream<Uint8Array<ArrayBuffer>, Uint8Array<ArrayBuffer>> {
 	#compressor = new Compressor();
 
@@ -153,8 +357,45 @@ await new Command()
 	.option('--vs2026', 'Use Visual Studio 2026 generator')
 	.option('--debug', 'Build with Debug config instead of Release')
 	.option('-A, --arch <arch:target-arch>', 'Configure target architecture for cross-compile', { default: 'x86_64' })
+	.option('--cpu-baseline <level:string>', 'Minimum CPU instruction set the artifact requires (x86_64: v1|v2|avx|v3|v4, default v1; aarch64: v8.0)', {
+		value(value: string): CpuBaseline {
+			if (!ALL_CPU_BASELINES.has(value as CpuBaseline)) {
+				throw new ValidationError(
+					`unsupported CPU baseline '${value}'; expected one of: ${[ ...ALL_CPU_BASELINES ].join(', ')}`
+				);
+			}
+
+			return value as CpuBaseline;
+		}
+	})
 	.action(async (options, ..._) => {
 		const root = Deno.cwd();
+
+		// Everything past this block clones, resets and cleans onnxruntime/, so validation has to
+		// come first: a typo must not cost the caller their checkout.
+		const targetArch = options.arch as TargetArchitecture;
+		const cpuBaseline = options.cpuBaseline ?? DEFAULT_CPU_BASELINE[targetArch];
+		const allowedBaselines: readonly CpuBaseline[] = CPU_BASELINES[targetArch];
+		if (!allowedBaselines.includes(cpuBaseline)) {
+			throw new ValidationError(
+				`--cpu-baseline=${cpuBaseline} is invalid for --arch=${targetArch}; ` +
+				`expected one of: ${allowedBaselines.join(', ')}`
+			);
+		}
+
+		if (targetArch === 'x86_64' && platform === 'win32' && cpuBaseline === 'v2') {
+			console.warn('MSVC has no flag for the x86-64-v2 level; building with the v1 (SSE2) baseline instead.');
+		}
+
+		// Resolved up front so a missing toolchain fails in seconds rather than after the build.
+		const needsFmaGuard = targetArch === 'x86_64' && !FMA_ENABLED_BASELINES.has(cpuBaseline);
+		const disassembler = needsFmaGuard ? await resolveDisassembler() : null;
+		if (needsFmaGuard && !disassembler) {
+			throw new ValidationError(
+				`--cpu-baseline=${cpuBaseline} needs a disassembler to verify that no FMA instructions leaked ` +
+				`into the generic MLAS kernels; put one of these on PATH: ${DISASSEMBLERS.map(d => d.command).join(', ')}`
+			);
+		}
 
 		const onnxruntimeRoot = join(root, 'onnxruntime');
 		const isExists = await exists(onnxruntimeRoot)
@@ -414,17 +655,14 @@ await new Command()
 		args.push(`-Donnxruntime_USE_KLEIDIAI=${options.arch === 'aarch64' ? 'ON' : 'OFF'}`);
 		args.push('-Donnxruntime_CLIENT_PACKAGE_BUILD=ON');
 
-		if (options.arch === 'x86_64') {
-			args.push('-Donnxruntime_USE_AVX2=ON');
-			switch (platform) {
-				case 'linux':
-					compilerFlags.push('-march=x86-64-v3');
-					break;
-				case 'win32':
-					compilerFlags.push('/arch:AVX2');
-					break;
-			}
-		}
+		// ORT's global ISA switches only append compiler flags, and the ones they append cannot
+		// express a psABI level (USE_AVX2 gives -mavx2, which is strictly narrower than
+		// -march=x86-64-v3). Keep them off so the mapping above is the single source of truth.
+		args.push('-Donnxruntime_USE_AVX=OFF');
+		args.push('-Donnxruntime_USE_AVX2=OFF');
+		args.push('-Donnxruntime_USE_AVX512=OFF');
+
+		compilerFlags.push(...getCpuBaselineCompilerFlags(targetArch, cpuBaseline));
 
 		if (compilerFlags.length > 0) {
 			const allFlags = compilerFlags.join(' ');
@@ -446,7 +684,48 @@ await new Command()
 		const buildConfig = options.debug ? 'Debug' : 'Release';
 		await $`cmake -S ${sourceDir} -B build -D CMAKE_BUILD_TYPE=${buildConfig} -DCMAKE_CONFIGURATION_TYPES=${buildConfig} -DCMAKE_INSTALL_PREFIX=${artifactOutDir} -DONNXRUNTIME_SOURCE_DIR=${onnxruntimeRoot} --compile-no-warning-as-error ${args}`
 			.env(env);
+
+		const cachePath = join(onnxruntimeRoot, 'build', 'CMakeCache.txt');
+		const cacheLines = (await Deno.readTextFile(cachePath)).split(/\r?\n/);
+		const readCacheEntry = (name: string, type: string): string => {
+			const prefix = `${name}:${type}=`;
+			const line = cacheLines.find(line => line.startsWith(prefix));
+			if (line === undefined) {
+				throw new Error(`${prefix.slice(0, -1)} is missing from ${cachePath}`);
+			}
+
+			return line.slice(prefix.length).trim();
+		};
+
+		for (const option of [ 'onnxruntime_USE_AVX', 'onnxruntime_USE_AVX2', 'onnxruntime_USE_AVX512' ]) {
+			const value = readCacheEntry(option, 'BOOL');
+			if (value !== 'OFF') {
+				throw new Error(`${option} is unexpectedly ${value} in ${cachePath}`);
+			}
+		}
+
+		if (targetArch === 'x86_64') {
+			const expected = getCpuBaselineCompilerFlags(targetArch, cpuBaseline);
+			// A baseline that emits no ISA flags is normal (v1/v2 on MSVC), so name the empty case
+			// rather than printing an empty string that reads as a formatting bug.
+			const describe = (flags: string[]): string => flags.length ? `'${flags.join(' ')}'` : 'none';
+			for (const name of [ 'CMAKE_C_FLAGS', 'CMAKE_CXX_FLAGS' ]) {
+				const actual = getIsaFlags(readCacheEntry(name, 'STRING'));
+				if (actual.join(' ') !== expected.join(' ')) {
+					throw new Error(
+						`${name} does not match --cpu-baseline=${cpuBaseline}; ` +
+						`expected ISA flags ${describe(expected)}, got ${describe(actual)}`
+					);
+				}
+			}
+		}
+
 		await $`cmake --build build --config ${buildConfig} --parallel ${cpus().length}`;
+
+		if (disassembler) {
+			await assertNoFmaInGenericMlas(join(onnxruntimeRoot, 'build'), disassembler, cpuBaseline);
+		}
+
 		await $`cmake --install build`;
 
 		const artifactOut = await Deno.open(join(root, 'artifact.tar.lzma2'), { create: true, write: true });

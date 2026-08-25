@@ -12,6 +12,15 @@ jobs:
   build:
     uses: ./.github/workflows/build-runner.yml
 
+    # `args:` convention for the CPU instruction set baseline (see README.md):
+    #   - Rows that omit `--cpu-baseline` inherit the safe default (v1 on x86_64, v8.0 on
+    #     aarch64) and keep their artifact filename, so downstream pinned URLs still resolve.
+    #     The contents change, so consumers still bump the sha256. Every row below is such a row.
+    #   - A row that raises the baseline MUST also carry the level in `feature-set`, so an
+    #     artifact that cannot run on every CPU is impossible to mistake for one that can:
+    #       args: "--directml --cpu-baseline v3"   feature-set: v3,directml
+    # Do not raise the baseline for performance: MLAS already dispatches its kernels at
+    # runtime via CPUID, and raising it crashes older CPUs (Linear DEV-666 / DEV-668).
     strategy:
       fail-fast: false
       matrix:
