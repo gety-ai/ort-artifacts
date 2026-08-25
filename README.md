@@ -19,14 +19,14 @@ Build pipeline for the pre-compiled [ONNX Runtime](https://onnxruntime.ai/) bina
 ## Building locally
 
 ```bash
-# Static build with DirectML, Windows x86_64
-deno run -A src/build.ts -v 1.28.1 -s --directml
+# Static build with OpenVINO, Windows x86_64
+deno run -A src/build.ts -v 1.31.0 -s --openvino
 
 # Static build with CoreML on Apple Silicon, using Ninja
-deno run -A src/build.ts -v 1.28.1 -s -A aarch64 --coreml -N
+deno run -A src/build.ts -v 1.31.0 -s -A aarch64 --coreml -N
 
 # Static build with CUDA 12 and TensorRT, Linux x86_64
-deno run -A src/build.ts -v 1.28.1 -s --cuda=12 --trt -N
+deno run -A src/build.ts -v 1.31.0 -s --cuda=12 --trt -N
 ```
 
 The leading `-A` grants Deno permissions; the `-A aarch64` in the second example is the CLI's own `--arch` flag.
@@ -38,7 +38,7 @@ The leading `-A` grants Deno permissions; the `-A aarch64` in the second example
 
 | Flag | Value | Description |
 | :--- | :--- | :--- |
-| `-v, --upstream-version` | string | **Required.** Exact upstream release to build, e.g. `1.28.1`. |
+| `-v, --upstream-version` | string | **Required.** Exact upstream release to build, e.g. `1.31.0`. |
 | `-A, --arch` | `x86_64` \| `aarch64` | Target architecture. Default `x86_64`. |
 | `--cpu-baseline` | level | Minimum CPU instruction set the artifact requires. See below. |
 | `-s, --static` | flag | Build a static library. |
@@ -49,13 +49,14 @@ The leading `-A` grants Deno permissions; the `-A aarch64` in the second example
 | `--android` | flag | Target Android. Requires `ANDROID_NDK_HOME` and `ANDROID_API`. |
 | `--iphoneos` | flag | Target iOS / iPadOS. |
 | `--iphonesimulator` | flag | Target the iOS / iPadOS simulator. |
-| `--cuda` | `12` \| `13` | Enable the CUDA EP and download the matching cuDNN. |
+| `--cuda` | `12` \| `13` | Enable the CUDA EP and download the matching cuDNN. CUDA 12 is x86_64 only. |
 | `--trt` | flag | Enable the TensorRT EP. Requires `--cuda`. |
 | `--nvrtx` | flag | Enable the NVIDIA TensorRT RTX EP. |
 | `--directml` | flag | Enable the DirectML EP. Windows only. |
 | `--coreml` | flag | Enable the CoreML EP. macOS only. |
 | `--webgpu` | flag | Enable the WebGPU EP. |
-| `--openvino` | flag | Enable the OpenVINO EP and download the OpenVINO SDK. |
+| `--openvino` | flag | Enable the OpenVINO EP and download the OpenVINO SDK. Linux and Windows only. |
+| `--migraphx` | flag | Enable the AMD MIGraphX EP. x86_64 Linux only; expects ROCm under `ROCM_PATH` (default `/opt/rocm`). |
 | `--dnnl` | flag | Enable the oneDNN EP. |
 | `--xnnpack` | flag | Enable the XNNPACK EP. |
 | `--nnapi` | flag | Enable the NNAPI EP. Android only. |
@@ -110,20 +111,25 @@ Each matrix row uploads `artifact.tar.lzma2` under the name `<target>[+<feature-
 | `aarch64-unknown-linux-gnu` | `-A aarch64 -N` | `none` | `ubuntu-24.04` |
 | `x86_64-unknown-linux-gnu` | `-N` | `none` | `ubuntu-24.04` |
 | `aarch64-apple-darwin` | `--coreml -A aarch64 -N` | `coreml` | `macos-15` |
-| `aarch64-pc-windows-msvc` | `-A aarch64 --directml` | `directml` | `windows-2022` |
-| `x86_64-pc-windows-msvc` | `--directml` | `directml` | `windows-2022` |
-| `x86_64-unknown-linux-gnu` | `--cuda=12 --trt -N` | `cuda12,tensorrt` | `ubuntu-24.04` |
-| `x86_64-pc-windows-msvc` | `--directml --cuda=12 --trt` | `cuda12,tensorrt,directml` | `windows-2022` |
-| `x86_64-unknown-linux-gnu` | `--cuda=13 --trt --nvrtx -N` | `cuda13,tensorrt,nvrtx` | `ubuntu-24.04` |
-| `x86_64-pc-windows-msvc` | `--directml --cuda=13 --trt --nvrtx` | `cuda13,tensorrt,nvrtx,directml` | `windows-2022` |
+| `aarch64-pc-windows-msvc` | `-A aarch64` | `none` | `windows-2022` |
+| `x86_64-pc-windows-msvc` | *(none)* | `none` | `windows-2022` |
+| `x86_64-unknown-linux-gnu` | `--cuda=12 --trt -N` | `cuda12+tensorrt` | `ubuntu-24.04` |
+| `x86_64-pc-windows-msvc` | `--cuda=12 --trt` | `cuda12+tensorrt` | `windows-2022` |
+| `x86_64-unknown-linux-gnu` | `--cuda=13 --trt --nvrtx -N` | `cuda13+tensorrt+nvrtx` | `ubuntu-24.04` |
+| `aarch64-unknown-linux-gnu` | `-A aarch64 --cuda=13 --trt --nvrtx -N` | `cuda13+tensorrt+nvrtx` | `ubuntu-24.04-arm` |
+| `x86_64-pc-windows-msvc` | `--cuda=13 --trt --nvrtx` | `cuda13+tensorrt+nvrtx` | `windows-2022` |
 | `x86_64-unknown-linux-gnu` | `--webgpu -N` | `webgpu` | `ubuntu-24.04` |
 | `x86_64-pc-windows-msvc` | `--webgpu --vs2026` | `webgpu` | `windows-2025` |
-| `aarch64-apple-darwin` | `--coreml -A aarch64 -N --webgpu` | `coreml,webgpu` | `macos-15` |
+| `aarch64-apple-darwin` | `--coreml -A aarch64 -N --webgpu` | `coreml+webgpu` | `macos-15` |
 | `aarch64-apple-ios` | `-A aarch64 --iphoneos --coreml -N` | `coreml` | `macos-15` |
 | `aarch64-apple-ios-sim` | `-A aarch64 --iphonesimulator --coreml -N` | `coreml` | `macos-15` |
 | `aarch64-linux-android` | `-A aarch64 --android --nnapi -N` | `nnapi` | `ubuntu-24.04` |
+| `x86_64-linux-android` | `-A x86_64 --android --nnapi -N` | `nnapi` | `ubuntu-24.04` |
 | `x86_64-unknown-linux-gnu` | `--nvrtx -N` | `nvrtx` | `ubuntu-24.04` |
-| `x86_64-pc-windows-msvc` | `--nvrtx --directml` | `nvrtx,directml` | `windows-2022` |
+| `x86_64-pc-windows-msvc` | `--nvrtx` | `nvrtx` | `windows-2022` |
+| `x86_64-unknown-linux-gnu` | `--migraphx -N` | `migraphx` | `ubuntu-24.04` |
+| `x86_64-unknown-linux-gnu` | `--openvino -N` | `openvino` | `ubuntu-24.04` |
+| `x86_64-pc-windows-msvc` | `--openvino` | `openvino` | `windows-2022` |
 
 Every row builds at the default baseline and therefore carries no baseline segment in its filename, so downstream pinned URLs keep resolving. The archive contents change with every rebuild, so consumers still bump the sha256 they pin.
 
@@ -132,9 +138,11 @@ If a non-default baseline is ever shipped, the level **must** appear as the lead
 ```yaml
 - target: x86_64-pc-windows-msvc
   args: "--directml --cpu-baseline v3"
-  feature-set: amd64-v3,directml
-  # -> x86_64-pc-windows-msvc+amd64-v3,directml.tar.lzma2
+  feature-set: amd64-v3+directml
+  # -> x86_64-pc-windows-msvc+amd64-v3+directml.tar.lzma2
 ```
+
+Segments are separated with `+`, never `,`. GitHub keeps commas in Actions artifact names but rewrites them in *release asset* names, so a comma here silently changes the filename once [ort-redistribution](https://github.com/gety-ai/ort-redistribution) republishes it — and the manifest it writes would then point at a name that does not exist.
 
 The token in the filename is **arch-qualified** — `amd64-v3`, not the bare `v3` accepted by the flag. The flag can be bare because `--arch` supplies the context; a filename has no such context, and a bare level would collide across architectures once aarch64 grows its own vocabulary (`neon`, `sve2`). The mapping is `x86_64` → `amd64`, `aarch64` → `arm64`:
 
@@ -148,3 +156,5 @@ The token in the filename is **arch-qualified** — `amd64-v3`, not the bare `v3
 | `aarch64` / `v8.0` | *(omitted — the default)* |
 
 [ort-redistribution](https://github.com/gety-ai/ort-redistribution) parses this token back out into an explicit `cpuBaseline` field when it splits an archive into base + EP packages, so keep the two vocabularies in sync.
+
+Note the two layers name things differently on purpose. Here the default baseline is omitted, which keeps the build matrix terse. In the redistribution release it is always written out — `x86_64-pc-windows-msvc+amd64-v1+cu12.base.zip` — because those names are pinned by consumers, and a name that states its baseline lets a consumer switch variants by changing that one segment.
